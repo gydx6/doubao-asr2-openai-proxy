@@ -1,0 +1,14 @@
+{
+  "name": "doubao-asr2-openai-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env src/server.js",
+    "dev": "node --env-file=.env --watch src/server.js",
+    "preflight": "node --env-file=.env src/preflight.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
