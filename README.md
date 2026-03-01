@@ -59,7 +59,7 @@ If the web docs page requires JavaScript in your environment, use `doubao_asr.md
 ## 1) Setup
 
 ```bash
-cd /Users/gg/code/doubao-asr2-openai-proxy
+cd /path/to/repo
 cp .env.example .env
 # edit .env and fill VOLC_APP_KEY / VOLC_ACCESS_KEY
 npm install
@@ -89,7 +89,7 @@ SHUTDOWN_TIMEOUT_MS=8000
 Run command:
 
 ```bash
-cd /Users/gg/code/doubao-asr2-openai-proxy
+cd /path/to/repo
 npm run start
 ```
 
@@ -120,7 +120,7 @@ If `PROXY_API_KEY` is empty, Authorization is optional.
 ## 5) PM2
 
 ```bash
-cd /Users/gg/code/doubao-asr2-openai-proxy
+cd /path/to/repo
 pm2 delete doubao-asr2-openai-proxy || true
 pm2 start ecosystem.config.cjs
 pm2 logs volcengine-doubao-asr2-openai-proxy
