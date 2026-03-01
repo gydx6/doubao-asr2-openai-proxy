@@ -35,6 +35,28 @@ This project implements a practical subset for Spokenly-style transcription work
   - `response_format=srt`
   - `response_format=vtt`
 
+## Official Realtime API vs This Proxy
+
+Official reference:
+- [Volcengine Realtime API for Doubao ASR](https://www.volcengine.com/docs/6893/1527759?lang=en)
+
+What the official layer provides:
+- A stateful, event-driven WebSocket Realtime API.
+- Compatibility with OpenAI Realtime-style events for ASR sessions.
+
+How it differs from this project:
+- Official Realtime API is a WebSocket event protocol.
+- This project is an HTTP bridge for OpenAI-compatible `POST /v1/audio/transcriptions` clients.
+- Official integration expects clients to implement Realtime event handling; this proxy keeps existing REST transcription clients unchanged.
+
+Why this project is still useful:
+- Spokenly and many existing tools are built around transcription REST flows rather than Realtime events.
+- This proxy avoids client-side protocol rewrites and keeps deployment simple for local workflows.
+- It also provides local control over transcoding, logging, and error mapping.
+
+When this proxy may be optional:
+- If your client natively supports the official Realtime API and your workflow is fully event-driven, direct integration can be a better fit.
+
 ## Agent Notes
 
 This repository is intended to be discoverable and reusable by coding agents.

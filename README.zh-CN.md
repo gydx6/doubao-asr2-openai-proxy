@@ -32,6 +32,28 @@
   - `response_format=srt`
   - `response_format=vtt`
 
+## 官方 Realtime API 与本项目差异
+
+官方参考文档：
+- [Volcengine Realtime API for Doubao ASR](https://www.volcengine.com/docs/6893/1527759?lang=en)
+
+官方兼容层提供的能力：
+- 一个有状态、事件驱动的 WebSocket Realtime API。
+- 兼容 OpenAI Realtime 风格的 ASR 事件交互。
+
+与本项目的区别：
+- 官方 Realtime API 是 WebSocket 事件协议。
+- 本项目是面向 OpenAI 兼容 `POST /v1/audio/transcriptions` 客户端的 HTTP 桥接层。
+- 官方方案要求客户端实现 Realtime 事件处理；本项目保持现有 REST 转写客户端基本不改造。
+
+本项目当前仍有价值的原因：
+- Spokenly 和很多现有工具仍以 transcription REST 流程为主，而非 Realtime 事件流。
+- 本项目可以避免客户端协议重写，降低本地部署与接入复杂度。
+- 同时提供本地可控的转码、日志和错误映射能力。
+
+本项目可能变为可选的场景：
+- 如果你的客户端已原生支持官方 Realtime API，且工作流完全基于事件流直连，则可优先考虑官方直连方式。
+
 ## Agent 说明
 
 本仓库被设计为可被编码 Agent 发现并复用。  
