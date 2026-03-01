@@ -29,14 +29,14 @@ const config = {
   volcResourceId: process.env.VOLC_RESOURCE_ID || 'volc.seedasr.sauc.duration',
   volcWsUrl: process.env.VOLC_WS_URL || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
   volcModelName: process.env.VOLC_MODEL_NAME || 'bigmodel',
-  segmentDurationMs: Math.max(100, intEnv('SEGMENT_DURATION_MS', 1000)),
-  sendIntervalMs: Math.max(0, intEnv('SEND_INTERVAL_MS', 0)),
+  segmentDurationMs: Math.max(100, intEnv('SEGMENT_DURATION_MS', 200)),
+  sendIntervalMs: Math.max(0, intEnv('SEND_INTERVAL_MS', 120)),
   requestTimeoutMs: intEnv('REQUEST_TIMEOUT_MS', 90000),
   maxUploadBytes: intEnv('MAX_UPLOAD_BYTES', 25 * 1024 * 1024),
   enableItn: boolEnv('ENABLE_ITN', true),
   enablePunc: boolEnv('ENABLE_PUNC', true),
   enableDdc: boolEnv('ENABLE_DDC', false),
-  showUtterances: boolEnv('SHOW_UTTERANCES', true),
+  showUtterances: boolEnv('SHOW_UTTERANCES', false),
   resultType: process.env.RESULT_TYPE || 'full'
 };
 
@@ -371,7 +371,8 @@ function decodePayload(serialization, compression, payload) {
   return decoded;
 }
 
-function parseServerFrame(frame) {
+function parseServerFrame(frame, options = {}) {
+  const decodeFullPayload = options.decodeFullPayload !== false;
   const msg = Buffer.isBuffer(frame) ? frame : Buffer.from(frame);
   if (msg.length < 4) {
     throw new Error('Invalid frame: header too short.');
@@ -399,7 +400,7 @@ function parseServerFrame(frame) {
     const payloadSize = msg.readUInt32BE(offset);
     offset += 4;
     const payload = msg.slice(offset, offset + payloadSize);
-    const decoded = decodePayload(serialization, compression, payload);
+    const decoded = decodeFullPayload ? decodePayload(serialization, compression, payload) : null;
     return {
       messageType,
       sequence,
@@ -450,6 +451,7 @@ function extractText(payload) {
 async function runDoubaoAsr(pcmBuffer, options = {}) {
   const connectId = randomUUID();
   const wsUrl = config.volcWsUrl;
+  const asrStartedAt = Date.now();
 
   const headers = {
     'X-Api-App-Key': config.volcAppKey,
@@ -465,6 +467,11 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
   let wsClosed = false;
   let seenLast = false;
   let responseLogId = '';
+  let sendFinished = false;
+  let openMs = 0;
+  let sendMs = 0;
+  let waitMs = 0;
+  let packetCount = 0;
 
   const completion = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -487,7 +494,9 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
 
     ws.on('message', (data) => {
       try {
-        const parsed = parseServerFrame(data);
+        // While we are still uploading audio packets, skip heavy payload decoding
+        // for intermediate responses so packet sending is not blocked by JSON parsing.
+        let parsed = parseServerFrame(data, { decodeFullPayload: sendFinished });
         if (parsed.messageType === MSG_TYPE.SERVER_ERROR_RESPONSE) {
           const err = new Error('Doubao returned protocol error frame.');
           err.detail = parsed.error;
@@ -501,6 +510,10 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
             // ignore
           }
           return;
+        }
+
+        if (parsed.messageType === MSG_TYPE.SERVER_FULL_RESPONSE && parsed.payload == null && parsed.isLast) {
+          parsed = parseServerFrame(data, { decodeFullPayload: true });
         }
 
         const text = extractText(parsed.payload);
@@ -536,10 +549,12 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
     });
   });
 
+  const openStartAt = Date.now();
   await new Promise((resolve, reject) => {
     ws.once('open', resolve);
     ws.once('error', reject);
   });
+  openMs = Date.now() - openStartAt;
 
   const fullPayload = {
     user: {
@@ -564,6 +579,7 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
     }
   };
 
+  const sendStartAt = Date.now();
   await sendWsFrame(ws, buildFullClientRequest(seq, fullPayload));
   seq += 1;
 
@@ -572,6 +588,7 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
   if (pcmBuffer.length === 0) {
     const frame = buildAudioOnlyRequest(seq, Buffer.alloc(0), true);
     await sendWsFrame(ws, frame);
+    packetCount = 1;
   } else {
     let offset = 0;
     while (offset < pcmBuffer.length) {
@@ -580,6 +597,7 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
       const chunk = pcmBuffer.slice(offset, end);
       const frame = buildAudioOnlyRequest(seq, chunk, isLast);
       await sendWsFrame(ws, frame);
+      packetCount += 1;
       if (!isLast) {
         seq += 1;
       }
@@ -589,8 +607,12 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
       }
     }
   }
+  sendMs = Date.now() - sendStartAt;
+  sendFinished = true;
 
+  const waitStartAt = Date.now();
   const result = await completion;
+  waitMs = Date.now() - waitStartAt;
   if (!wsClosed) {
     try {
       ws.close();
@@ -598,6 +620,21 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
       // ignore
     }
   }
+  const bytesPerMsForLog = 16000 * 2 / 1000;
+  const audioMs = Math.round(pcmBuffer.length / bytesPerMsForLog);
+  logInfo('ASR timing', {
+    connectId,
+    logid: responseLogId,
+    wsUrl,
+    audioMs,
+    openMs,
+    sendMs,
+    waitMs,
+    totalMs: Date.now() - asrStartedAt,
+    packets: packetCount,
+    segmentDurationMs: config.segmentDurationMs,
+    sendIntervalMs: config.sendIntervalMs
+  });
   return result;
 }
 
@@ -606,6 +643,14 @@ function isTranscribePath(pathname) {
 }
 
 async function handleTranscribe(req, res) {
+  const reqStartedAt = Date.now();
+  let readBodyMs = 0;
+  let parseMs = 0;
+  let transcodeMs = 0;
+  let asrMs = 0;
+  let uploadBytes = 0;
+  let fileBytes = 0;
+
   const auth = assertProxyAuth(req);
   if (!auth.ok) {
     sendJson(res, auth.code, { error: { message: auth.message, type: 'invalid_request_error' } });
@@ -626,27 +671,47 @@ async function handleTranscribe(req, res) {
 
   let body;
   try {
+    const readBodyStartAt = Date.now();
     body = await readBody(req, config.maxUploadBytes);
+    readBodyMs = Date.now() - readBodyStartAt;
+    uploadBytes = body.length;
   } catch (err) {
     sendJson(res, 413, { error: { message: err.message } });
     return;
   }
 
+  const parseStartAt = Date.now();
   const parts = parseMultipart(body, boundary);
   const { fields, filePart } = parseFields(parts);
+  parseMs = Date.now() - parseStartAt;
 
   if (!filePart || !filePart.content || filePart.content.length === 0) {
     sendJson(res, 400, { error: { message: 'Missing audio file part.' } });
     return;
   }
+  fileBytes = filePart.content.length;
 
   const language = fields.language ? String(fields.language).trim() : '';
   const prompt = fields.prompt ? String(fields.prompt).trim() : '';
   const responseFormat = fields.response_format ? String(fields.response_format).trim() : 'json';
 
   try {
+    const transcodeStartAt = Date.now();
     const pcm = await transcodeToPcm16kMono(filePart.content);
+    transcodeMs = Date.now() - transcodeStartAt;
+    const asrStartAt = Date.now();
     const asrResult = await runDoubaoAsr(pcm, { language, prompt });
+    asrMs = Date.now() - asrStartAt;
+
+    logInfo('Transcription timing', {
+      uploadBytes,
+      fileBytes,
+      readBodyMs,
+      parseMs,
+      transcodeMs,
+      asrMs,
+      totalMs: Date.now() - reqStartedAt
+    });
 
     if (responseFormat === 'text') {
       sendText(res, 200, asrResult.text || '');
@@ -665,6 +730,16 @@ async function handleTranscribe(req, res) {
       detail: err.detail || null
     };
 
+    logInfo('Transcription timing', {
+      uploadBytes,
+      fileBytes,
+      readBodyMs,
+      parseMs,
+      transcodeMs,
+      asrMs,
+      totalMs: Date.now() - reqStartedAt,
+      failed: true
+    });
     logError('Transcription failed', detail);
 
     sendJson(res, 502, {

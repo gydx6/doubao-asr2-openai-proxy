@@ -58,7 +58,8 @@ pm2 save
 - ffmpeg error:
   - install ffmpeg and make sure `ffmpeg` is in PATH
 - Slow result after recording ends:
-  - use `SEGMENT_DURATION_MS=1000` and `SEND_INTERVAL_MS=0` for faster file-mode forwarding
+  - long audio stability profile (recommended): `SEGMENT_DURATION_MS=200`, `SEND_INTERVAL_MS=120`, `SHOW_UTTERANCES=false`
+  - faster forwarding profile: `SEGMENT_DURATION_MS=1000`, `SEND_INTERVAL_MS=0` (may be less stable for long recordings)
 - For support tickets, keep logs with:
   - `connectId`
   - `logid` (X-Tt-Logid)
