@@ -294,6 +294,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function sendWsFrame(ws, frame) {
+  return new Promise((resolve, reject) => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      reject(new Error(`WebSocket is not open. state=${ws.readyState}`));
+      return;
+    }
+    ws.send(frame, (err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 function buildHeader(messageType, messageTypeSpecificFlags, serialization, compression) {
   const header = Buffer.alloc(4);
   header[0] = (VERSION << 4) | 0b0001;
@@ -548,31 +564,30 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
     }
   };
 
-  ws.send(buildFullClientRequest(seq, fullPayload));
+  await sendWsFrame(ws, buildFullClientRequest(seq, fullPayload));
   seq += 1;
 
   const bytesPerMs = 16000 * 2 / 1000;
   const segmentSize = Math.max(1, Math.floor(bytesPerMs * config.segmentDurationMs));
-  const chunks = [];
-  for (let i = 0; i < pcmBuffer.length; i += segmentSize) {
-    chunks.push(pcmBuffer.slice(i, i + segmentSize));
-  }
-
-  for (let i = 0; i < chunks.length; i += 1) {
-    const isLast = i === chunks.length - 1;
-    const frame = buildAudioOnlyRequest(seq, chunks[i], isLast);
-    ws.send(frame);
-    if (!isLast) {
-      seq += 1;
-    }
-    if (config.sendIntervalMs > 0) {
-      await sleep(config.sendIntervalMs);
-    }
-  }
-
-  if (chunks.length === 0) {
+  if (pcmBuffer.length === 0) {
     const frame = buildAudioOnlyRequest(seq, Buffer.alloc(0), true);
-    ws.send(frame);
+    await sendWsFrame(ws, frame);
+  } else {
+    let offset = 0;
+    while (offset < pcmBuffer.length) {
+      const end = Math.min(offset + segmentSize, pcmBuffer.length);
+      const isLast = end >= pcmBuffer.length;
+      const chunk = pcmBuffer.slice(offset, end);
+      const frame = buildAudioOnlyRequest(seq, chunk, isLast);
+      await sendWsFrame(ws, frame);
+      if (!isLast) {
+        seq += 1;
+      }
+      offset = end;
+      if (config.sendIntervalMs > 0) {
+        await sleep(config.sendIntervalMs);
+      }
+    }
   }
 
   const result = await completion;
