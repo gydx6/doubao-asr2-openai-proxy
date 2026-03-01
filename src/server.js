@@ -29,8 +29,8 @@ const config = {
   volcResourceId: process.env.VOLC_RESOURCE_ID || 'volc.seedasr.sauc.duration',
   volcWsUrl: process.env.VOLC_WS_URL || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
   volcModelName: process.env.VOLC_MODEL_NAME || 'bigmodel',
-  segmentDurationMs: intEnv('SEGMENT_DURATION_MS', 200),
-  sendIntervalMs: intEnv('SEND_INTERVAL_MS', 200),
+  segmentDurationMs: Math.max(100, intEnv('SEGMENT_DURATION_MS', 1000)),
+  sendIntervalMs: Math.max(0, intEnv('SEND_INTERVAL_MS', 0)),
   requestTimeoutMs: intEnv('REQUEST_TIMEOUT_MS', 90000),
   maxUploadBytes: intEnv('MAX_UPLOAD_BYTES', 25 * 1024 * 1024),
   enableItn: boolEnv('ENABLE_ITN', true),
@@ -565,7 +565,9 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
     if (!isLast) {
       seq += 1;
     }
-    await sleep(config.sendIntervalMs);
+    if (config.sendIntervalMs > 0) {
+      await sleep(config.sendIntervalMs);
+    }
   }
 
   if (chunks.length === 0) {

@@ -57,6 +57,8 @@ pm2 save
   - ensure the account has access to ASR 2.0 seedasr duration package
 - ffmpeg error:
   - install ffmpeg and make sure `ffmpeg` is in PATH
+- Slow result after recording ends:
+  - use `SEGMENT_DURATION_MS=1000` and `SEND_INTERVAL_MS=0` for faster file-mode forwarding
 - For support tickets, keep logs with:
   - `connectId`
   - `logid` (X-Tt-Logid)
