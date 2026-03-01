@@ -30,7 +30,7 @@ const config = {
   volcWsUrl: process.env.VOLC_WS_URL || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream',
   volcModelName: process.env.VOLC_MODEL_NAME || 'bigmodel',
   segmentDurationMs: Math.max(100, intEnv('SEGMENT_DURATION_MS', 200)),
-  sendIntervalMs: Math.max(0, intEnv('SEND_INTERVAL_MS', 120)),
+  sendIntervalMs: Math.max(0, intEnv('SEND_INTERVAL_MS', 0)),
   bodyReadTimeoutMs: Math.max(1000, intEnv('BODY_READ_TIMEOUT_MS', 30000)),
   requestTimeoutMs: intEnv('REQUEST_TIMEOUT_MS', 90000),
   shutdownTimeoutMs: Math.max(1000, intEnv('SHUTDOWN_TIMEOUT_MS', 8000)),
@@ -162,27 +162,45 @@ function parseContentDisposition(headerValue) {
   return out;
 }
 
+function isValidBoundaryMarker(body, markerStart, boundaryBuf) {
+  if (markerStart < 0) return false;
+  const atLineStart = markerStart === 0
+    || (markerStart >= 2 && body[markerStart - 2] === 13 && body[markerStart - 1] === 10);
+  if (!atLineStart) return false;
+  const markerEnd = markerStart + boundaryBuf.length;
+  const b0 = body[markerEnd];
+  const b1 = body[markerEnd + 1];
+  return (b0 === 13 && b1 === 10) || (b0 === 45 && b1 === 45);
+}
+
+function findBoundaryMarker(body, boundaryBuf, fromIndex) {
+  let markerStart = body.indexOf(boundaryBuf, fromIndex);
+  while (markerStart >= 0) {
+    if (isValidBoundaryMarker(body, markerStart, boundaryBuf)) {
+      return markerStart;
+    }
+    markerStart = body.indexOf(boundaryBuf, markerStart + 1);
+  }
+  return -1;
+}
+
 function parseMultipart(body, boundary) {
   const boundaryBuf = Buffer.from(`--${boundary}`);
+  const headerDelimiter = Buffer.from('\r\n\r\n');
   const parts = [];
-  let searchStart = 0;
+  let markerStart = findBoundaryMarker(body, boundaryBuf, 0);
 
-  while (true) {
-    const markerStart = body.indexOf(boundaryBuf, searchStart);
-    if (markerStart < 0) break;
-
+  while (markerStart >= 0) {
     const markerEnd = markerStart + boundaryBuf.length;
-    const maybeFinal = body.slice(markerEnd, markerEnd + 2).toString('utf8');
-    if (maybeFinal === '--') {
-      break;
+    const isFinal = body[markerEnd] === 45 && body[markerEnd + 1] === 45;
+    if (isFinal) break;
+    if (!(body[markerEnd] === 13 && body[markerEnd + 1] === 10)) {
+      markerStart = findBoundaryMarker(body, boundaryBuf, markerEnd);
+      continue;
     }
 
-    let partStart = markerEnd;
-    if (body[partStart] === 13 && body[partStart + 1] === 10) {
-      partStart += 2;
-    }
-
-    const nextMarker = body.indexOf(boundaryBuf, partStart);
+    const partStart = markerEnd + 2;
+    const nextMarker = findBoundaryMarker(body, boundaryBuf, partStart);
     if (nextMarker < 0) break;
 
     let partEnd = nextMarker;
@@ -190,11 +208,11 @@ function parseMultipart(body, boundary) {
       partEnd -= 2;
     }
 
-    const rawPart = body.slice(partStart, partEnd);
-    const headerEnd = rawPart.indexOf(Buffer.from('\r\n\r\n'));
-    if (headerEnd > 0) {
-      const rawHeaders = rawPart.slice(0, headerEnd).toString('utf8');
-      const content = rawPart.slice(headerEnd + 4);
+    const rawPart = body.subarray(partStart, partEnd);
+    const headerEnd = rawPart.indexOf(headerDelimiter);
+    if (headerEnd >= 0) {
+      const rawHeaders = rawPart.subarray(0, headerEnd).toString('utf8');
+      const content = rawPart.subarray(headerEnd + 4);
       const headerLines = rawHeaders.split('\r\n');
       const headers = {};
       for (const line of headerLines) {
@@ -213,7 +231,7 @@ function parseMultipart(body, boundary) {
       });
     }
 
-    searchStart = nextMarker;
+    markerStart = nextMarker;
   }
 
   return parts;
@@ -235,6 +253,44 @@ function parseFields(parts) {
   return { fields, filePart };
 }
 
+function mapBodyReadError(err) {
+  if (err && err.code === 'BODY_TIMEOUT') {
+    return { statusCode: 408, message: err.message, closeConnection: true };
+  }
+  if (err && err.code === 'BODY_TOO_LARGE') {
+    return { statusCode: 413, message: err.message, closeConnection: true };
+  }
+  if (err && (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED')) {
+    return {
+      statusCode: 400,
+      message: 'Client disconnected while uploading request body.',
+      closeConnection: false
+    };
+  }
+  return {
+    statusCode: 500,
+    message: err && err.message ? err.message : 'Failed to read request body.',
+    closeConnection: false
+  };
+}
+
+function getTranscriptionClientMessage(err) {
+  const msg = String((err && err.message) || '');
+  if (msg.includes('ffmpeg')) {
+    return 'Audio preprocessing failed before ASR.';
+  }
+  if (msg.includes('ASR timeout')) {
+    return 'ASR request timed out.';
+  }
+  if (err && err.errorCode) {
+    return 'Upstream ASR returned an error.';
+  }
+  if (msg.includes('WebSocket')) {
+    return 'Failed to communicate with upstream ASR.';
+  }
+  return 'Transcription failed.';
+}
+
 function readBody(req, maxBytes, timeoutMs) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -252,17 +308,10 @@ function readBody(req, maxBytes, timeoutMs) {
       req.off('error', onError);
     };
 
-    const rejectOnce = (err, shouldDestroyReq = false) => {
+    const rejectOnce = (err) => {
       if (settled) return;
       settled = true;
       cleanup();
-      if (shouldDestroyReq) {
-        try {
-          req.destroy();
-        } catch {
-          // ignore
-        }
-      }
       reject(err);
     };
 
@@ -279,7 +328,7 @@ function readBody(req, maxBytes, timeoutMs) {
       timer = setTimeout(() => {
         const err = new Error(`Request body timeout after ${timeoutMs}ms.`);
         err.code = 'BODY_TIMEOUT';
-        rejectOnce(err, true);
+        rejectOnce(err);
       }, timeoutMs);
       timer.unref();
     };
@@ -290,7 +339,7 @@ function readBody(req, maxBytes, timeoutMs) {
       if (total > maxBytes) {
         const err = new Error(`Request body too large. Max ${maxBytes} bytes.`);
         err.code = 'BODY_TOO_LARGE';
-        rejectOnce(err, true);
+        rejectOnce(err);
         return;
       }
       chunks.push(chunk);
@@ -532,26 +581,49 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
   let waitMs = 0;
   let packetCount = 0;
 
+  ws.on('upgrade', (res) => {
+    responseLogId = String(res.headers['x-tt-logid'] || '');
+    if (responseLogId) {
+      logInfo('Connected to Doubao ASR 2.0', { connectId, logid: responseLogId });
+    } else {
+      logInfo('Connected to Doubao ASR 2.0', { connectId });
+    }
+  });
+
   const completion = new Promise((resolve, reject) => {
+    let settled = false;
     const timer = setTimeout(() => {
-      reject(new Error(`ASR timeout after ${config.requestTimeoutMs}ms.`));
+      rejectOnce(new Error(`ASR timeout after ${config.requestTimeoutMs}ms.`));
       try {
         ws.close();
       } catch {
         // ignore
       }
     }, config.requestTimeoutMs);
+    timer.unref();
 
-    ws.on('upgrade', (res) => {
-      responseLogId = String(res.headers['x-tt-logid'] || '');
-      if (responseLogId) {
-        logInfo('Connected to Doubao ASR 2.0', { connectId, logid: responseLogId });
-      } else {
-        logInfo('Connected to Doubao ASR 2.0', { connectId });
-      }
-    });
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.off('message', onMessage);
+      ws.off('error', onError);
+      ws.off('close', onClose);
+    };
 
-    ws.on('message', (data) => {
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const rejectOnce = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    const onMessage = (data) => {
       try {
         // While we are still uploading audio packets, skip heavy payload decoding
         // for intermediate responses so packet sending is not blocked by JSON parsing.
@@ -562,7 +634,7 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
           err.errorCode = parsed.errorCode;
           err.connectId = connectId;
           err.logid = responseLogId;
-          reject(err);
+          rejectOnce(err);
           try {
             ws.close();
           } catch {
@@ -582,8 +654,7 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
 
         if (parsed.isLast) {
           seenLast = true;
-          clearTimeout(timer);
-          resolve({ text: finalText, connectId, logid: responseLogId });
+          resolveOnce({ text: finalText, connectId, logid: responseLogId });
           try {
             ws.close();
           } catch {
@@ -591,22 +662,27 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
           }
         }
       } catch (err) {
-        reject(err);
+        rejectOnce(err);
       }
-    });
+    };
 
-    ws.on('error', (err) => {
-      reject(err);
-    });
+    const onError = (err) => {
+      rejectOnce(err);
+    };
 
-    ws.on('close', (code, reasonBuf) => {
+    const onClose = (code, reasonBuf) => {
       wsClosed = true;
       const reason = Buffer.isBuffer(reasonBuf) ? reasonBuf.toString('utf8') : String(reasonBuf || '');
       if (!seenLast) {
-        reject(new Error(`WebSocket closed before final response. code=${code} reason=${reason}`));
+        rejectOnce(new Error(`WebSocket closed before final response. code=${code} reason=${reason}`));
       }
-    });
+    };
+
+    ws.on('message', onMessage);
+    ws.on('error', onError);
+    ws.on('close', onClose);
   });
+  completion.catch(() => {});
 
   const openStartAt = Date.now();
   await new Promise((resolve, reject) => {
@@ -747,8 +823,20 @@ async function handleTranscribe(req, res) {
     readBodyMs = Date.now() - readBodyStartAt;
     uploadBytes = body.length;
   } catch (err) {
-    const code = err.code === 'BODY_TIMEOUT' ? 408 : 413;
-    sendJson(res, code, { error: { message: err.message } });
+    const mapped = mapBodyReadError(err);
+    if (mapped.closeConnection) {
+      res.setHeader('Connection', 'close');
+    }
+    sendJson(res, mapped.statusCode, { error: { message: mapped.message } });
+    if (mapped.closeConnection && req.socket && !req.socket.destroyed) {
+      res.once('finish', () => {
+        try {
+          req.socket.destroy();
+        } catch {
+          // ignore
+        }
+      });
+    }
     return;
   }
 
@@ -816,7 +904,7 @@ async function handleTranscribe(req, res) {
 
     sendJson(res, 502, {
       error: {
-        message: 'Connection failed, please check your API key and model name.',
+        message: getTranscriptionClientMessage(err),
         type: 'api_error',
         detail
       }

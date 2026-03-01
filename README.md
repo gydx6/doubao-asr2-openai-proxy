@@ -11,6 +11,21 @@ Doubao ASR 2.0 does not expose OpenAI-compatible `/v1/audio/transcriptions` dire
 - translate requests to Doubao ASR 2.0 WebSocket binary protocol
 - return text in the format expected by OpenAI-compatible apps
 
+## OpenAI Compatibility Scope
+
+This project implements a practical subset for Spokenly-style transcription workflows, not the full OpenAI audio API surface.
+
+- supported routes:
+  - `POST /v1/audio/transcriptions`
+  - `POST /doubao/v1/audio/transcriptions`
+- supported output formats:
+  - `json` (default, returns `{ "text": "..." }`)
+  - `text` (plain text)
+- not implemented:
+  - `response_format=verbose_json`
+  - `response_format=srt`
+  - `response_format=vtt`
+
 ## Agent Notes
 
 This repository is intended to be discoverable and reusable by coding agents.
