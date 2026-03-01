@@ -1,6 +1,11 @@
 # Volcengine Doubao ASR 2.0 OpenAI Proxy
 
-Local OpenAI-compatible transcription proxy for Spokenly.
+[中文文档 (README.zh-CN)](./README.zh-CN.md)
+
+> 豆包/火山引擎流式语音识别 ASR 2.0 (Seed-ASR) 转 OpenAI 兼容协议的本地代理服务。  
+> Converts Volcengine Doubao ASR 2.0 (Seed-ASR) WebSocket binary protocol to OpenAI-compatible `/v1/audio/transcriptions` REST API.
+
+Local OpenAI-compatible transcription proxy for Spokenly and any OpenAI-compatible client.
 
 ## Why This Project Exists
 

@@ -1,5 +1,7 @@
 # Volcengine 豆包 ASR 2.0 OpenAI 代理
 
+[English README](./README.md)
+
 面向 Spokenly 的本地 OpenAI 兼容转写代理。
 
 ## 为什么创建这个项目
