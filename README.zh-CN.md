@@ -4,8 +4,12 @@
 
 ## 为什么创建这个项目
 
-我们创建这个项目，是因为所需的语音工作流无法直接在 Spokenly 中实现。  
-豆包 ASR 2.0 并不直接提供 OpenAI 兼容的 `/v1/audio/transcriptions`，因此我们为 OpenAI 兼容客户端构建了这层本地代理：
+在最近一次更新后，Spokenly 已支持豆包 1.0，并可稳定使用。  
+但在切换到豆包 2.0 时，Spokenly 内置路径在实际使用中会直接报错，现阶段应视为该路径不支持豆包 2.0。  
+为了解决这个兼容性缺口，Spokenly 提供了 OpenAI 兼容接入方式，允许用户填写自己的 API Key/端点并对接不同模型。本项目正是基于这一路径创建：
+
+社区讨论参考（已有大量用户反馈类似现象）：
+- [spokenly 弄半天接不进豆包 2.0，有遇到同样问题的佬友吗](https://linux.do/t/topic/1561971)
 
 - 接收 OpenAI 兼容的 `/v1/audio/transcriptions`
 - 将请求转换为豆包 ASR 2.0 WebSocket 二进制协议

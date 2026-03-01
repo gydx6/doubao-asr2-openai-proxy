@@ -4,8 +4,12 @@ Local OpenAI-compatible transcription proxy for Spokenly.
 
 ## Why This Project Exists
 
-We created this project because the required voice workflow could not be implemented directly in Spokenly.
-Doubao ASR 2.0 does not expose OpenAI-compatible `/v1/audio/transcriptions` directly, so we built this local proxy layer for OpenAI-compatible clients:
+In a recent update, Spokenly added support for Doubao 1.0, and it works reliably in that mode.
+However, when switching to Doubao 2.0, Spokenly's built-in path returns direct errors in practice, and Doubao 2.0 should be treated as unsupported in this path at this stage.
+To bridge this gap, Spokenly provides an OpenAI-compatible integration path where users can supply their own API keys/endpoints and connect different models. This project was created around that path:
+
+Community discussion reference (many users reporting similar behavior):
+- [spokenly 弄半天接不进豆包 2.0，有遇到同样问题的佬友吗](https://linux.do/t/topic/1561971)
 
 - accept OpenAI-compatible `/v1/audio/transcriptions`
 - translate requests to Doubao ASR 2.0 WebSocket binary protocol
