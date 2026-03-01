@@ -6,7 +6,7 @@ const config = {
   volcAppKey: process.env.VOLC_APP_KEY || '',
   volcAccessKey: process.env.VOLC_ACCESS_KEY || '',
   volcResourceId: process.env.VOLC_RESOURCE_ID || 'volc.seedasr.sauc.duration',
-  volcWsUrl: process.env.VOLC_WS_URL || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
+  volcWsUrl: process.env.VOLC_WS_URL || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream',
   modelName: process.env.VOLC_MODEL_NAME || 'bigmodel',
   timeoutMs: Number.parseInt(process.env.REQUEST_TIMEOUT_MS || '90000', 10)
 };

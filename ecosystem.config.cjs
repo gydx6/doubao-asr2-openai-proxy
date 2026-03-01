@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'doubao-asr2-openai-proxy',
+      name: 'volcengine-doubao-asr2-openai-proxy',
       cwd: __dirname,
       script: 'src/server.js',
       node_args: '--env-file=.env',

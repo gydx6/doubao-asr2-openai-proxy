@@ -1,5 +1,5 @@
 {
-  "name": "doubao-asr2-openai-proxy",
+  "name": "volcengine-doubao-asr2-openai-proxy",
   "version": "0.1.0",
   "private": true,
   "type": "module",

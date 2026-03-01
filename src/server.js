@@ -27,7 +27,7 @@ const config = {
   volcAppKey: process.env.VOLC_APP_KEY || '',
   volcAccessKey: process.env.VOLC_ACCESS_KEY || '',
   volcResourceId: process.env.VOLC_RESOURCE_ID || 'volc.seedasr.sauc.duration',
-  volcWsUrl: process.env.VOLC_WS_URL || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
+  volcWsUrl: process.env.VOLC_WS_URL || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream',
   volcModelName: process.env.VOLC_MODEL_NAME || 'bigmodel',
   segmentDurationMs: Math.max(100, intEnv('SEGMENT_DURATION_MS', 200)),
   sendIntervalMs: Math.max(0, intEnv('SEND_INTERVAL_MS', 120)),
@@ -503,6 +503,10 @@ function extractText(payload) {
   return '';
 }
 
+function isNostreamWsUrl(wsUrl) {
+  return String(wsUrl || '').toLowerCase().includes('/bigmodel_nostream');
+}
+
 async function runDoubaoAsr(pcmBuffer, options = {}) {
   const connectId = randomUUID();
   const wsUrl = config.volcWsUrl;
@@ -611,18 +615,30 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
   });
   openMs = Date.now() - openStartAt;
 
+  const allowLanguage = isNostreamWsUrl(wsUrl);
+  if (options.language && !allowLanguage) {
+    logInfo('Ignore language for non-nostream endpoint', {
+      wsUrl,
+      language: options.language
+    });
+  }
+
+  const audioPayload = {
+    format: 'pcm',
+    codec: 'raw',
+    rate: 16000,
+    bits: 16,
+    channel: 1
+  };
+  if (allowLanguage && options.language) {
+    audioPayload.language = options.language;
+  }
+
   const fullPayload = {
     user: {
       uid: options.uid || 'spokenly-proxy'
     },
-    audio: {
-      format: 'pcm',
-      codec: 'raw',
-      rate: 16000,
-      bits: 16,
-      channel: 1,
-      ...(options.language ? { language: options.language } : {})
-    },
+    audio: audioPayload,
     request: {
       model_name: config.volcModelName,
       enable_itn: config.enableItn,
@@ -657,7 +673,7 @@ async function runDoubaoAsr(pcmBuffer, options = {}) {
         seq += 1;
       }
       offset = end;
-      if (config.sendIntervalMs > 0) {
+      if (config.sendIntervalMs > 0 && !isLast) {
         await sleep(config.sendIntervalMs);
       }
     }
@@ -811,7 +827,7 @@ async function handleTranscribe(req, res) {
 function handleHealth(req, res) {
   sendJson(res, 200, {
     ok: true,
-    service: 'doubao-asr2-openai-proxy',
+    service: 'volcengine-doubao-asr2-openai-proxy',
     model: config.volcModelName,
     resource_id: config.volcResourceId,
     ws_url: config.volcWsUrl
