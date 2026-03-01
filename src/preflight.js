@@ -33,6 +33,17 @@ const COMPRESSION = {
   GZIP: 0b0001
 };
 
+function decodePayload(serialization, compression, payload) {
+  let decoded = payload;
+  if (compression === COMPRESSION.GZIP && payload.length > 0) {
+    decoded = gunzipSync(payload);
+  }
+  if (serialization === SERIALIZATION.JSON && decoded.length > 0) {
+    return JSON.parse(decoded.toString('utf8'));
+  }
+  return decoded;
+}
+
 function fail(message, extra = null) {
   console.error(`FAIL: ${message}`);
   if (extra) {
@@ -105,13 +116,12 @@ function parseServerFrame(frame) {
   if (messageType === MSG_TYPE.SERVER_FULL_RESPONSE) {
     const payloadSize = msg.readUInt32BE(offset);
     offset += 4;
-    let payload = msg.slice(offset, offset + payloadSize);
-    if (compression === COMPRESSION.GZIP) {
-      payload = gunzipSync(payload);
-    }
+    const payload = msg.slice(offset, offset + payloadSize);
     let json = null;
-    if (serialization === SERIALIZATION.JSON) {
-      json = JSON.parse(payload.toString('utf8'));
+    try {
+      json = decodePayload(serialization, compression, payload);
+    } catch {
+      json = null;
     }
     return { messageType, sequence, isLast, json };
   }
@@ -121,8 +131,15 @@ function parseServerFrame(frame) {
     offset += 4;
     const payloadSize = msg.readUInt32BE(offset);
     offset += 4;
-    const payload = msg.slice(offset, offset + payloadSize).toString('utf8');
-    return { messageType, sequence, isLast, errorCode, error: payload };
+    const payload = msg.slice(offset, offset + payloadSize);
+    let error;
+    try {
+      const decoded = decodePayload(serialization, compression, payload);
+      error = typeof decoded === 'string' ? decoded : JSON.stringify(decoded);
+    } catch {
+      error = payload.toString('utf8');
+    }
+    return { messageType, sequence, isLast, errorCode, error };
   }
 
   return { messageType, sequence, isLast };

@@ -31,7 +31,9 @@ const config = {
   volcModelName: process.env.VOLC_MODEL_NAME || 'bigmodel',
   segmentDurationMs: Math.max(100, intEnv('SEGMENT_DURATION_MS', 200)),
   sendIntervalMs: Math.max(0, intEnv('SEND_INTERVAL_MS', 120)),
+  bodyReadTimeoutMs: Math.max(1000, intEnv('BODY_READ_TIMEOUT_MS', 30000)),
   requestTimeoutMs: intEnv('REQUEST_TIMEOUT_MS', 90000),
+  shutdownTimeoutMs: Math.max(1000, intEnv('SHUTDOWN_TIMEOUT_MS', 8000)),
   maxUploadBytes: intEnv('MAX_UPLOAD_BYTES', 25 * 1024 * 1024),
   enableItn: boolEnv('ENABLE_ITN', true),
   enablePunc: boolEnv('ENABLE_PUNC', true),
@@ -233,26 +235,79 @@ function parseFields(parts) {
   return { fields, filePart };
 }
 
-function readBody(req, maxBytes) {
+function readBody(req, maxBytes, timeoutMs) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
+    let settled = false;
+    let timer = null;
 
-    req.on('data', (chunk) => {
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+    };
+
+    const rejectOnce = (err, shouldDestroyReq = false) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (shouldDestroyReq) {
+        try {
+          req.destroy();
+        } catch {
+          // ignore
+        }
+      }
+      reject(err);
+    };
+
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const refreshTimeout = () => {
+      if (timeoutMs <= 0) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const err = new Error(`Request body timeout after ${timeoutMs}ms.`);
+        err.code = 'BODY_TIMEOUT';
+        rejectOnce(err, true);
+      }, timeoutMs);
+      timer.unref();
+    };
+
+    const onData = (chunk) => {
+      refreshTimeout();
       total += chunk.length;
       if (total > maxBytes) {
-        reject(new Error(`Request body too large. Max ${maxBytes} bytes.`));
-        req.destroy();
+        const err = new Error(`Request body too large. Max ${maxBytes} bytes.`);
+        err.code = 'BODY_TOO_LARGE';
+        rejectOnce(err, true);
         return;
       }
       chunks.push(chunk);
-    });
+    };
 
-    req.on('end', () => {
-      resolve(Buffer.concat(chunks));
-    });
+    const onEnd = () => {
+      resolveOnce(Buffer.concat(chunks));
+    };
 
-    req.on('error', (err) => reject(err));
+    const onError = (err) => {
+      rejectOnce(err);
+    };
+
+    refreshTimeout();
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
   });
 }
 
@@ -672,11 +727,12 @@ async function handleTranscribe(req, res) {
   let body;
   try {
     const readBodyStartAt = Date.now();
-    body = await readBody(req, config.maxUploadBytes);
+    body = await readBody(req, config.maxUploadBytes, config.bodyReadTimeoutMs);
     readBodyMs = Date.now() - readBodyStartAt;
     uploadBytes = body.length;
   } catch (err) {
-    sendJson(res, 413, { error: { message: err.message } });
+    const code = err.code === 'BODY_TIMEOUT' ? 408 : 413;
+    sendJson(res, code, { error: { message: err.message } });
     return;
   }
 
@@ -797,6 +853,49 @@ function start() {
       wsUrl: config.volcWsUrl
     });
   });
+
+  const sockets = new Set();
+  let shuttingDown = false;
+
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logInfo('Shutdown signal received', { signal });
+
+    server.close((err) => {
+      if (err) {
+        logError('Server close failed', { signal, message: err.message });
+        process.exit(1);
+        return;
+      }
+      logInfo('Server closed gracefully', { signal });
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      logError('Shutdown timeout reached, force closing sockets', {
+        signal,
+        timeoutMs: config.shutdownTimeoutMs,
+        openSockets: sockets.size
+      });
+      for (const socket of sockets) {
+        try {
+          socket.destroy();
+        } catch {
+          // ignore
+        }
+      }
+      process.exit(1);
+    }, config.shutdownTimeoutMs).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start();

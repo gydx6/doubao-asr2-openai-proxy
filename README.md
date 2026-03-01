@@ -48,6 +48,8 @@ pm2 logs doubao-asr2-openai-proxy
 pm2 save
 ```
 
+`ecosystem.config.cjs` now uses `node_args: '--env-file=.env'` so PM2 loads your local env values.
+
 ## 5) Troubleshooting
 
 - Connection failed before transcription:
@@ -60,6 +62,8 @@ pm2 save
 - Slow result after recording ends:
   - long audio stability profile (recommended): `SEGMENT_DURATION_MS=200`, `SEND_INTERVAL_MS=120`, `SHOW_UTTERANCES=false`
   - faster forwarding profile: `SEGMENT_DURATION_MS=1000`, `SEND_INTERVAL_MS=0` (may be less stable for long recordings)
+- Body upload timeout:
+  - tune `BODY_READ_TIMEOUT_MS` (default `30000`) if very large uploads are expected
 - For support tickets, keep logs with:
   - `connectId`
   - `logid` (X-Tt-Logid)
